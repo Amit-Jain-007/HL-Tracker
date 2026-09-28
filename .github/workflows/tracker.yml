@@ -1,0 +1,47 @@
+name: Hyperliquid tracker
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: hl-tracker
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Restore state
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: hl-state-${{ github.run_id }}
+          restore-keys: hl-state-
+
+      - name: Run one check
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          HL_WALLETS: ${{ secrets.HL_WALLETS }}
+          HL_SETTINGS: ${{ vars.HL_SETTINGS }}
+          QUIET_LOGS: '1'
+        run: node tracker.js --once
+
+      - name: Save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: hl-state-${{ github.run_id }}
