@@ -1,0 +1,18 @@
+{
+  "wallets": [
+    { "address": "0xFULL_WALLET_ADDRESS_HERE", "nickname": "Example wallet" }
+  ],
+  "settings": {
+    "tgToken": "",
+    "tgChatId": "",
+    "pollInterval": 30,
+    "largeTradeUsd": 10000,
+    "pnlSwingUsd": 500,
+    "liqProximityPct": 10,
+    "notifyOpenClose": true,
+    "notifyLargeTrade": true,
+    "notifyPnlSwing": true,
+    "notifyLiqRisk": true,
+    "notifyDepositWithdraw": true
+  }
+}
