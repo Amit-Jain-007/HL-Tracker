@@ -14,7 +14,7 @@ const HL_API = 'https://api.hyperliquid.xyz/info';
 
 const DEFAULT_SETTINGS = {
   tgToken: '', tgChatId: '', pollInterval: 30,
-  largeTradeUsd: 10000, pnlSwingUsd: 500, liqProximityPct: 10,
+  largeTradeUsd: 10000, minPositionUsd: 10000, pnlSwingUsd: 500, liqProximityPct: 10,
   notifyOpenClose: true, notifyLargeTrade: true, notifyPnlSwing: true,
   notifyLiqRisk: true, notifyDepositWithdraw: true
 };
@@ -129,23 +129,37 @@ async function checkWallet(w, settings) {
 
     const oldPositions = st.positions || {};
 
-    // On the very first check of a wallet we only record a baseline, so you
-    // don't get an "Opened" alert for every position it already holds.
-    if (settings.notifyOpenClose && !firstSeen) {
-      for (const key of Object.keys(newPositions)) {
-        if (!oldPositions[key]) {
-          const p = newPositions[key];
+    // Open/close alerts.
+    // - First check of a wallet: only record a baseline (no "Opened" spam for positions it already holds).
+    // - A new position is announced ONCE, only after its size reaches minPositionUsd
+    //   (so a position built from many small entries alerts when it gets big enough).
+    // - "Closed" is only sent for positions that were announced.
+    if (!st.openAlerted) {
+      st.openAlerted = {};
+      for (const key of Object.keys(oldPositions)) st.openAlerted[key] = true; // already known
+    }
+    for (const key of Object.keys(newPositions)) {
+      const p = newPositions[key];
+      if (firstSeen) { st.openAlerted[key] = true; continue; }
+      if (st.openAlerted[key]) continue;
+      const value = Math.abs(p.positionValue) || Math.abs(p.szi) * p.entryPx;
+      if (value >= (settings.minPositionUsd || 0)) {
+        st.openAlerted[key] = true;
+        if (settings.notifyOpenClose) {
           const side = p.szi > 0 ? 'Long' : 'Short';
           const label = p.dex ? `${p.coin} (${p.dex})` : p.coin;
-          await alert(settings, `🟢 [${w.nickname}] Opened ${side} ${label} — size ${Math.abs(p.szi)} @ ${fmtUsd(p.entryPx)}`);
+          await alert(settings, `🟢 [${w.nickname}] Opened ${side} ${label} — size ${Math.abs(p.szi)} @ ${fmtUsd(p.entryPx)} (~${fmtUsd(value)})`);
         }
       }
-      for (const key of Object.keys(oldPositions)) {
-        if (!newPositions[key]) {
+    }
+    for (const key of Object.keys(st.openAlerted)) {
+      if (!newPositions[key]) {
+        if (settings.notifyOpenClose && st.openAlerted[key] && oldPositions[key]) {
           const p = oldPositions[key];
           const label = p.dex ? `${p.coin} (${p.dex})` : p.coin;
           await alert(settings, `🔴 [${w.nickname}] Closed ${label} position`);
         }
+        delete st.openAlerted[key];
       }
     }
 
@@ -185,15 +199,25 @@ async function checkWallet(w, settings) {
       try {
         const fills = await hlPost({ type: 'userFillsByTime', user: addr, startTime: st.lastFillTime, aggregateByTime: false });
         let maxTime = st.lastFillTime;
+        // Add up fills per coin + direction, so many small entries count as one trade.
+        const agg = {};
         for (const f of (fills || [])) {
-          const notional = Math.abs(parseFloat(f.sz)) * parseFloat(f.px);
           if (f.time > maxTime) maxTime = f.time;
           // Skip spot trades: spot coins look like "@107" or "PURR/USDC", and spot dir is plain "Buy"/"Sell".
           const coinStr = String(f.coin || '');
           const isSpot = coinStr.startsWith('@') || coinStr.includes('/') || f.dir === 'Buy' || f.dir === 'Sell';
           if (isSpot) continue;
-          if (notional >= settings.largeTradeUsd) {
-            await alert(settings, `💰 [${w.nickname}] Trade: ${f.dir || (f.side === 'B' ? 'Buy' : 'Sell')} ${f.coin} ${f.sz} @ ${fmtUsd(f.px)} (${fmtUsd(notional)})`);
+          const k = `${f.coin}|${f.dir || f.side}`;
+          if (!agg[k]) agg[k] = { coin: f.coin, dir: f.dir || (f.side === 'B' ? 'Buy' : 'Sell'), notional: 0, sz: 0, count: 0 };
+          agg[k].notional += Math.abs(parseFloat(f.sz)) * parseFloat(f.px);
+          agg[k].sz += Math.abs(parseFloat(f.sz));
+          agg[k].count += 1;
+        }
+        for (const a of Object.values(agg)) {
+          if (a.notional >= settings.largeTradeUsd) {
+            const avgPx = a.sz ? a.notional / a.sz : 0;
+            const parts = a.count > 1 ? ` in ${a.count} fills` : '';
+            await alert(settings, `💰 [${w.nickname}] Trade: ${a.dir} ${a.coin} ${Number(a.sz.toPrecision(6))}${parts} @ avg ${fmtUsd(avgPx)} (${fmtUsd(a.notional)})`);
           }
         }
         st.lastFillTime = maxTime;
